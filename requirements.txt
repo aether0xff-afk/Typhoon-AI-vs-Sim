@@ -3,4 +3,6 @@ pandas>=2.3
 scikit-learn>=1.8
 matplotlib>=3.10
 torch>=2.11
-
+requests>=2.32
+xarray>=2025.3
+netCDF4>=1.7

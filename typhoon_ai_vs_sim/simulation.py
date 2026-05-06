@@ -11,6 +11,49 @@ from typhoon_ai_vs_sim.config import ExperimentConfig
 INTENSITY_MIN = 15.0
 INTENSITY_MAX = 85.0
 
+SYNTHETIC_PARAMETER_GUIDE = {
+    "time_step_hours": {
+        "value": 6,
+        "rationale": "Matches the standard synoptic spacing used in operational best-track archives.",
+    },
+    "track_length_steps": {
+        "range": [28, 42],
+        "rationale": "Represents roughly 7 to 10.5 days, a typical window that captures intensification and decay within one storm life cycle.",
+    },
+    "initial_latitude_deg": {
+        "range": [8.0, 14.0],
+        "rationale": "Keeps genesis in the tropical western North Pacific belt while leaving room for poleward recurvature.",
+    },
+    "latitude_bounds_deg": {
+        "range": [6.5, 32.0],
+        "rationale": "Covers low-latitude genesis through the poleward weakening stage without extending into implausible extratropical latitudes for this toy setup.",
+    },
+    "northward_drift_deg_per_step": {
+        "range": [0.18, 0.42],
+        "rationale": "Equivalent to about 13 to 31 km/h of meridional motion at 6-hour spacing, consistent with observed tropical cyclone translation speeds.",
+    },
+    "sst_c": {
+        "range": [24.6, 31.2],
+        "rationale": "Spans marginally supportive water through very warm tropical ocean conditions while staying inside the daily OISST range commonly seen along western North Pacific tracks.",
+    },
+    "initial_intensity_ms": {
+        "range": [24.0, 42.0],
+        "rationale": "Starts storms at tropical-storm to lower-typhoon intensity so the sequence contains meaningful strengthening and weakening behavior.",
+    },
+    "intensity_bounds_ms": {
+        "range": [INTENSITY_MIN, INTENSITY_MAX],
+        "rationale": "Avoids physically trivial weak disturbances and caps intensity near the upper end of observed super-typhoon strength.",
+    },
+    "vertical_shear_ms": {
+        "range": [2.0, 18.0],
+        "rationale": "Covers low-shear environments favorable for intensification up to hostile shear values that suppress storm organization.",
+    },
+    "relative_humidity_fraction": {
+        "range": [0.40, 0.96],
+        "rationale": "Keeps humidity in a realistic marine-tropospheric range while allowing dry-air penalties and moist-core boosts.",
+    },
+}
+
 
 @dataclass(slots=True)
 class StormTrack:
@@ -25,6 +68,24 @@ class StormTrack:
 
 def _sigmoid(x: np.ndarray | float) -> np.ndarray | float:
     return 1.0 / (1.0 + np.exp(-x))
+
+
+def build_synthetic_source_metadata(config: ExperimentConfig) -> dict[str, object]:
+    return {
+        "data_source": "synthetic",
+        "seed": config.seed,
+        "step_hours": config.step_hours,
+        "n_storms": config.n_storms,
+        "parameter_guide": SYNTHETIC_PARAMETER_GUIDE,
+        "physics_baseline": {
+            "intensity_min_ms": INTENSITY_MIN,
+            "intensity_max_ms": INTENSITY_MAX,
+            "thermal_reference_c": 27.0,
+            "cold_penalty_threshold_c": 26.4,
+            "poleward_drag_threshold_deg": 18.0,
+            "saturation_threshold_ms": 60.0,
+        },
+    }
 
 
 def physics_delta(intensity: np.ndarray, sst: np.ndarray, latitude: np.ndarray) -> np.ndarray:

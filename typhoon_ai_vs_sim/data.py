@@ -99,10 +99,17 @@ class SequenceDataset(Dataset):
 def split_storms(
     storms: list[StormTrack], train_ratio: float, val_ratio: float, seed: int
 ) -> dict[str, str]:
+    if len(storms) < 3:
+        raise ValueError("At least 3 storms are required to create train/val/test splits.")
+
     rng = np.random.default_rng(seed)
     indices = rng.permutation(len(storms))
-    n_train = int(len(storms) * train_ratio)
-    n_val = int(len(storms) * val_ratio)
+    n_train = max(1, int(len(storms) * train_ratio))
+    n_val = max(1, int(len(storms) * val_ratio))
+
+    if n_train + n_val >= len(storms):
+        n_train = max(1, len(storms) - 2)
+        n_val = 1
 
     split_map: dict[str, str] = {}
     for order, storm_index in enumerate(indices):

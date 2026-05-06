@@ -7,6 +7,7 @@ import torch
 
 from typhoon_ai_vs_sim.config import ExperimentConfig
 from typhoon_ai_vs_sim.data import FEATURE_NAMES, prepare_data
+from typhoon_ai_vs_sim.data_sources import load_storm_tracks
 from typhoon_ai_vs_sim.models import (
     LSTMResidualRegressor,
     MLPResidualRegressor,
@@ -17,7 +18,7 @@ from typhoon_ai_vs_sim.plotting import (
     plot_sample_trajectories,
     plot_training_curves,
 )
-from typhoon_ai_vs_sim.simulation import generate_storm_tracks, storms_to_frame
+from typhoon_ai_vs_sim.simulation import storms_to_frame
 from typhoon_ai_vs_sim.train import (
     predict_physics_baseline,
     predict_with_model,
@@ -32,12 +33,15 @@ def run_experiment(config: ExperimentConfig) -> None:
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.ensure_directories()
 
-    storms = generate_storm_tracks(config)
+    storms, source_metadata = load_storm_tracks(config)
     raw_frame = storms_to_frame(storms)
     prepared = prepare_data(config, storms)
     raw_frame = raw_frame.merge(prepared.storm_frame, on="storm_id", how="left")
 
-    raw_frame.to_csv(config.output_dir / "synthetic_storm_tracks.csv", index=False)
+    raw_frame.to_csv(config.output_dir / "storm_tracks.csv", index=False)
+    if config.data_source == "synthetic":
+        raw_frame.to_csv(config.output_dir / "synthetic_storm_tracks.csv", index=False)
+    save_json(source_metadata, config.output_dir / "data_source_summary.json")
 
     input_dim = len(FEATURE_NAMES)
     models = {
@@ -118,10 +122,12 @@ def run_experiment(config: ExperimentConfig) -> None:
 
     summary_payload = {
         "seed": config.seed,
+        "data_source": config.data_source,
         "device": config.device,
-        "n_storms": config.n_storms,
+        "n_storms": len(storms),
         "window_size": config.window_size,
         "feature_names": list(FEATURE_NAMES),
+        "source_metadata": source_metadata,
         "checkpoints": checkpoint_summary,
         "test_metrics": metrics.loc[metrics["split"] == "test"].to_dict(orient="records"),
     }
