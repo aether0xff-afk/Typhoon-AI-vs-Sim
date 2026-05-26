@@ -7,7 +7,7 @@ from pathlib import Path
 @dataclass(slots=True)
 class ExperimentConfig:
     seed: int = 42
-    data_source: str = "synthetic"
+    data_source: str = "ibtracs"
     n_storms: int = 120
     min_steps: int = 28
     max_steps: int = 42

@@ -4,7 +4,6 @@ import argparse
 from pathlib import Path
 
 from typhoon_ai_vs_sim.config import ExperimentConfig
-from typhoon_ai_vs_sim.experiment import run_experiment
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -14,7 +13,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-source",
         choices=("synthetic", "ibtracs"),
-        default="synthetic",
+        default="ibtracs",
         help="Choose between synthetic storm generation and real IBTrACS best-track data.",
     )
     parser.add_argument("--storms", type=int, default=120, help="Number of synthetic storms.")
@@ -86,5 +85,7 @@ def main() -> int:
         max_real_storms=quick_real_limit,
         min_real_track_steps=args.min_real_track_steps,
     )
+    from typhoon_ai_vs_sim.experiment import run_experiment
+
     run_experiment(config)
     return 0

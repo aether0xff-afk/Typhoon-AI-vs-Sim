@@ -28,34 +28,34 @@ python -m pip install -r requirements.txt
 
 ## 실행
 
-합성 데이터 빠른 스모크 실행:
+실데이터 빠른 스모크 실행:
 
 ```bash
 python main.py --quick --output-dir outputs/smoke
 ```
 
-합성 데이터 기본 검증 실행:
+실데이터 기본 검증 실행:
 
 ```bash
 python main.py --output-dir outputs/run
 ```
 
+실데이터 직접 범위 조절:
+
+```bash
+python main.py --ibtracs-start-year 2018 --ibtracs-end-year 2020 --max-real-storms 24 --epochs 40 --output-dir outputs/custom
+```
+
+합성 데이터 스모크 실행:
+
+```bash
+python main.py --data-source synthetic --quick --output-dir outputs/smoke_synth
+```
+
 합성 데이터 직접 크기 조절:
 
 ```bash
-python main.py --storms 150 --epochs 50 --window-size 6 --output-dir outputs/custom
-```
-
-실데이터 스모크 실행:
-
-```bash
-python main.py --data-source ibtracs --ibtracs-start-year 2020 --ibtracs-end-year 2020 --max-real-storms 4 --epochs 5 --output-dir outputs/smoke_real
-```
-
-실데이터 기본 실행 예시:
-
-```bash
-python main.py --data-source ibtracs --ibtracs-start-year 2018 --ibtracs-end-year 2020 --max-real-storms 24 --output-dir outputs/real_run
+python main.py --data-source synthetic --storms 150 --epochs 50 --window-size 6 --output-dir outputs/synth_custom
 ```
 
 실데이터 실행 시 `data/` 아래에 다음 캐시가 자동으로 저장된다.
