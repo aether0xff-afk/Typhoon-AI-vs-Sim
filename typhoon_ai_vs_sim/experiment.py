@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -14,6 +15,7 @@ from typhoon_ai_vs_sim.models import (
     TransformerResidualRegressor,
 )
 from typhoon_ai_vs_sim.plotting import (
+    plot_diagnostic_relationships,
     plot_metrics,
     plot_sample_trajectories,
     plot_training_curves,
@@ -28,7 +30,7 @@ from typhoon_ai_vs_sim.train import (
 from typhoon_ai_vs_sim.utils import save_json, set_seed
 
 
-def run_experiment(config: ExperimentConfig) -> None:
+def run_experiment(config: ExperimentConfig) -> pd.DataFrame:
     set_seed(config.seed)
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.ensure_directories()
@@ -44,25 +46,68 @@ def run_experiment(config: ExperimentConfig) -> None:
     save_json(source_metadata, config.output_dir / "data_source_summary.json")
 
     input_dim = len(FEATURE_NAMES)
-    models = {
-        "MLP": MLPResidualRegressor(
-            window_size=config.window_size,
-            input_dim=input_dim,
-            hidden_size=config.hidden_size,
-            dropout=config.dropout,
+    model_specs = {
+        "Hybrid-MLP": (
+            MLPResidualRegressor(
+                window_size=config.window_size,
+                input_dim=input_dim,
+                hidden_size=config.hidden_size,
+                dropout=config.dropout,
+            ),
+            "hybrid",
+            "residual_target",
         ),
-        "LSTM": LSTMResidualRegressor(
-            input_dim=input_dim,
-            hidden_size=config.hidden_size,
-            dropout=config.dropout,
+        "Hybrid-LSTM": (
+            LSTMResidualRegressor(
+                input_dim=input_dim,
+                hidden_size=config.hidden_size,
+                dropout=config.dropout,
+            ),
+            "hybrid",
+            "residual_target",
         ),
-        "Transformer": TransformerResidualRegressor(
-            input_dim=input_dim,
-            model_dim=config.transformer_dim,
-            num_heads=config.transformer_heads,
-            num_layers=config.transformer_layers,
-            dropout=config.dropout,
-            max_len=config.window_size,
+        "Hybrid-Transformer": (
+            TransformerResidualRegressor(
+                input_dim=input_dim,
+                model_dim=config.transformer_dim,
+                num_heads=config.transformer_heads,
+                num_layers=config.transformer_layers,
+                dropout=config.dropout,
+                max_len=config.window_size,
+            ),
+            "hybrid",
+            "residual_target",
+        ),
+        "Direct-MLP": (
+            MLPResidualRegressor(
+                window_size=config.window_size,
+                input_dim=input_dim,
+                hidden_size=config.hidden_size,
+                dropout=config.dropout,
+            ),
+            "direct",
+            "direct_target",
+        ),
+        "Direct-LSTM": (
+            LSTMResidualRegressor(
+                input_dim=input_dim,
+                hidden_size=config.hidden_size,
+                dropout=config.dropout,
+            ),
+            "direct",
+            "direct_target",
+        ),
+        "Direct-Transformer": (
+            TransformerResidualRegressor(
+                input_dim=input_dim,
+                model_dim=config.transformer_dim,
+                num_heads=config.transformer_heads,
+                num_layers=config.transformer_layers,
+                dropout=config.dropout,
+                max_len=config.window_size,
+            ),
+            "direct",
+            "direct_target",
         ),
     }
 
@@ -73,7 +118,7 @@ def run_experiment(config: ExperimentConfig) -> None:
     history_frames: list[pd.DataFrame] = []
     checkpoint_summary: dict[str, str] = {}
 
-    for model_name, model in models.items():
+    for model_name, (model, prediction_mode, target_key) in model_specs.items():
         print(f"\nTraining {model_name} on {config.device}...")
         training_result = train_model(
             name=model_name,
@@ -81,6 +126,7 @@ def run_experiment(config: ExperimentConfig) -> None:
             train_split=prepared.train,
             val_split=prepared.val,
             config=config,
+            target_key=target_key,
         )
         history_frames.append(training_result.history)
         checkpoint_summary[model_name] = str(training_result.checkpoint_path)
@@ -92,6 +138,7 @@ def run_experiment(config: ExperimentConfig) -> None:
                 split=prepared.val,
                 scaler=prepared.scaler,
                 device_name=config.device,
+                prediction_mode=prediction_mode,
             )
         )
         prediction_frames.append(
@@ -101,6 +148,7 @@ def run_experiment(config: ExperimentConfig) -> None:
                 split=prepared.test,
                 scaler=prepared.scaler,
                 device_name=config.device,
+                prediction_mode=prediction_mode,
             )
         )
 
@@ -119,6 +167,11 @@ def run_experiment(config: ExperimentConfig) -> None:
         output_path=config.output_dir / "sample_trajectories.png",
     )
     plot_training_curves(training_history, config.output_dir / "training_curves.png")
+    plot_diagnostic_relationships(
+        predictions=all_predictions,
+        storm_frame=raw_frame,
+        output_dir=config.output_dir,
+    )
 
     summary_payload = {
         "seed": config.seed,
@@ -136,3 +189,44 @@ def run_experiment(config: ExperimentConfig) -> None:
     print("\nTest metrics")
     print(metrics.loc[metrics["split"] == "test"].to_string(index=False))
     print(f"\nArtifacts saved to: {Path(config.output_dir).resolve()}")
+    return metrics
+
+
+def run_repeated_experiments(config: ExperimentConfig, seeds: list[int]) -> None:
+    if not seeds:
+        raise ValueError("At least one seed is required for repeated experiments.")
+
+    root_output_dir = config.output_dir
+    all_seed_metrics: list[pd.DataFrame] = []
+    for seed in seeds:
+        seed_config = replace(
+            config,
+            seed=seed,
+            output_dir=root_output_dir / f"seed_{seed}",
+            checkpoint_dir=root_output_dir / f"seed_{seed}" / "checkpoints",
+        )
+        metrics = run_experiment(seed_config).copy()
+        metrics.insert(0, "seed", seed)
+        all_seed_metrics.append(metrics)
+
+    metrics_by_seed = pd.concat(all_seed_metrics, ignore_index=True)
+    summary = (
+        metrics_by_seed.groupby(["split", "model"], as_index=False)
+        .agg(
+            mae_mean=("mae", "mean"),
+            mae_std=("mae", "std"),
+            rmse_mean=("rmse", "mean"),
+            rmse_std=("rmse", "std"),
+            mae_improvement_pct_mean=("mae_improvement_pct", "mean"),
+            rmse_improvement_pct_mean=("rmse_improvement_pct", "mean"),
+        )
+        .round(4)
+    )
+
+    root_output_dir.mkdir(parents=True, exist_ok=True)
+    metrics_by_seed.to_csv(root_output_dir / "metrics_by_seed.csv", index=False)
+    summary.to_csv(root_output_dir / "metrics_summary.csv", index=False)
+
+    print("\nRepeated test metrics summary")
+    print(summary.loc[summary["split"] == "test"].to_string(index=False))
+    print(f"\nRepeated artifacts saved to: {Path(root_output_dir).resolve()}")

@@ -34,17 +34,25 @@ class SampleBundle:
 class StandardScalerBundle:
     feature_mean: np.ndarray
     feature_std: np.ndarray
-    target_mean: float
-    target_std: float
+    residual_target_mean: float
+    residual_target_std: float
+    direct_target_mean: float
+    direct_target_std: float
 
     def transform_features(self, values: np.ndarray) -> np.ndarray:
         return (values - self.feature_mean) / self.feature_std
 
-    def transform_target(self, values: np.ndarray) -> np.ndarray:
-        return (values - self.target_mean) / self.target_std
+    def transform_residual_target(self, values: np.ndarray) -> np.ndarray:
+        return (values - self.residual_target_mean) / self.residual_target_std
 
-    def inverse_target(self, values: np.ndarray) -> np.ndarray:
-        return values * self.target_std + self.target_mean
+    def inverse_residual_target(self, values: np.ndarray) -> np.ndarray:
+        return values * self.residual_target_std + self.residual_target_mean
+
+    def transform_direct_target(self, values: np.ndarray) -> np.ndarray:
+        return (values - self.direct_target_mean) / self.direct_target_std
+
+    def inverse_direct_target(self, values: np.ndarray) -> np.ndarray:
+        return values * self.direct_target_std + self.direct_target_mean
 
 
 @dataclass(slots=True)
@@ -69,14 +77,16 @@ class SequenceDataset(Dataset):
     def __init__(
         self,
         features: np.ndarray,
-        targets: np.ndarray,
+        residual_targets: np.ndarray,
+        direct_targets: np.ndarray,
         physics_predictions: np.ndarray,
         true_targets: np.ndarray,
         storm_ids: np.ndarray,
         target_steps: np.ndarray,
     ) -> None:
         self.features = torch.tensor(features, dtype=torch.float32)
-        self.targets = torch.tensor(targets, dtype=torch.float32)
+        self.residual_targets = torch.tensor(residual_targets, dtype=torch.float32)
+        self.direct_targets = torch.tensor(direct_targets, dtype=torch.float32)
         self.physics_predictions = torch.tensor(physics_predictions, dtype=torch.float32)
         self.true_targets = torch.tensor(true_targets, dtype=torch.float32)
         self.storm_ids = storm_ids
@@ -88,7 +98,8 @@ class SequenceDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, torch.Tensor | str | int]:
         return {
             "inputs": self.features[index],
-            "target": self.targets[index],
+            "residual_target": self.residual_targets[index],
+            "direct_target": self.direct_targets[index],
             "physics_prediction": self.physics_predictions[index],
             "true_target": self.true_targets[index],
             "storm_id": str(self.storm_ids[index]),
@@ -174,22 +185,32 @@ def build_sample_bundle(storms: list[StormTrack], window_size: int) -> SampleBun
 def fit_scaler(train_bundle: SampleBundle) -> StandardScalerBundle:
     feature_mean = train_bundle.features.mean(axis=(0, 1), keepdims=True)
     feature_std = train_bundle.features.std(axis=(0, 1), keepdims=True) + 1e-6
-    target_mean = float(train_bundle.residual_targets.mean())
-    target_std = float(train_bundle.residual_targets.std() + 1e-6)
+    residual_target_mean = float(train_bundle.residual_targets.mean())
+    residual_target_std = float(train_bundle.residual_targets.std() + 1e-6)
+    direct_target_mean = float(train_bundle.true_targets.mean())
+    direct_target_std = float(train_bundle.true_targets.std() + 1e-6)
     return StandardScalerBundle(
         feature_mean=feature_mean.astype(np.float32),
         feature_std=feature_std.astype(np.float32),
-        target_mean=target_mean,
-        target_std=target_std,
+        residual_target_mean=residual_target_mean,
+        residual_target_std=residual_target_std,
+        direct_target_mean=direct_target_mean,
+        direct_target_std=direct_target_std,
     )
 
 
 def make_dataset(bundle: SampleBundle, scaler: StandardScalerBundle) -> SequenceDataset:
     scaled_features = scaler.transform_features(bundle.features).astype(np.float32)
-    scaled_targets = scaler.transform_target(bundle.residual_targets).astype(np.float32)
+    scaled_residual_targets = scaler.transform_residual_target(
+        bundle.residual_targets
+    ).astype(np.float32)
+    scaled_direct_targets = scaler.transform_direct_target(bundle.true_targets).astype(
+        np.float32
+    )
     return SequenceDataset(
         features=scaled_features,
-        targets=scaled_targets,
+        residual_targets=scaled_residual_targets,
+        direct_targets=scaled_direct_targets,
         physics_predictions=bundle.physics_predictions,
         true_targets=bundle.true_targets,
         storm_ids=bundle.storm_ids,

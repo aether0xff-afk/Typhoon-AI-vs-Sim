@@ -28,6 +28,7 @@ def train_model(
     train_split: DataSplit,
     val_split: DataSplit,
     config: ExperimentConfig,
+    target_key: str,
 ) -> TrainedModelResult:
     device = torch.device(config.device)
     model.to(device)
@@ -49,7 +50,7 @@ def train_model(
 
         for batch in train_split.loader:
             inputs = batch["inputs"].to(device)
-            targets = batch["target"].to(device)
+            targets = batch[target_key].to(device)
 
             optimizer.zero_grad(set_to_none=True)
             predictions = model(inputs)
@@ -58,7 +59,7 @@ def train_model(
             optimizer.step()
             train_losses.append(float(loss.item()))
 
-        val_loss = _evaluate_loss(model, val_split, criterion, device)
+        val_loss = _evaluate_loss(model, val_split, criterion, device, target_key)
         train_loss = float(np.mean(train_losses))
         history_rows.append(
             {
@@ -102,14 +103,18 @@ def train_model(
 
 
 def _evaluate_loss(
-    model: nn.Module, split: DataSplit, criterion: nn.Module, device: torch.device
+    model: nn.Module,
+    split: DataSplit,
+    criterion: nn.Module,
+    device: torch.device,
+    target_key: str,
 ) -> float:
     model.eval()
     losses: list[float] = []
     with torch.no_grad():
         for batch in split.loader:
             inputs = batch["inputs"].to(device)
-            targets = batch["target"].to(device)
+            targets = batch[target_key].to(device)
             predictions = model(inputs)
             losses.append(float(criterion(predictions, targets).item()))
     return float(np.mean(losses))
@@ -121,6 +126,7 @@ def predict_with_model(
     split: DataSplit,
     scaler: StandardScalerBundle,
     device_name: str,
+    prediction_mode: str,
 ) -> pd.DataFrame:
     device = torch.device(device_name)
     model.to(device)
@@ -130,11 +136,18 @@ def predict_with_model(
     with torch.no_grad():
         for batch in split.loader:
             inputs = batch["inputs"].to(device)
-            scaled_residual_predictions = model(inputs).cpu().numpy()
-            residual_predictions = scaler.inverse_target(scaled_residual_predictions)
             physics_predictions = batch["physics_prediction"].numpy()
             true_targets = batch["true_target"].numpy()
-            final_predictions = physics_predictions + residual_predictions
+            scaled_predictions = model(inputs).cpu().numpy()
+
+            if prediction_mode == "hybrid":
+                residual_predictions = scaler.inverse_residual_target(scaled_predictions)
+                final_predictions = physics_predictions + residual_predictions
+            elif prediction_mode == "direct":
+                final_predictions = scaler.inverse_direct_target(scaled_predictions)
+                residual_predictions = final_predictions - physics_predictions
+            else:
+                raise ValueError(f"Unsupported prediction mode: {prediction_mode}")
 
             for index in range(len(residual_predictions)):
                 records.append(

@@ -45,6 +45,7 @@ def load_ibtracs_storm_tracks(
         raise RuntimeError("No real storms remained after applying the current filters.")
 
     enriched = _attach_oisst(selected, config)
+    enriched, era5_metadata = _attach_era5_if_available(enriched, config)
     storms = _frame_to_storm_tracks(enriched, config)
     if not storms:
         raise RuntimeError("Real-data preprocessing did not yield any usable storm tracks.")
@@ -62,10 +63,17 @@ def load_ibtracs_storm_tracks(
         "storms_loaded": len(storms),
         "rows_loaded": int(sum(len(storm.time) for storm in storms)),
         "unique_oisst_days": int(enriched["oisst_date"].nunique()),
+        "era5": era5_metadata,
+        "physics_baseline": {
+            "description": "Interpretable simplified baseline model with rule-based coefficients, not a calibrated operational forecast model.",
+            "inputs": ["intensity_ms", "sst_c", "latitude_deg"],
+            "coefficient_note": "Coefficients are fixed simplified rule-based values that encode warm-water support, cold-water penalty, poleward weakening, and intensity saturation.",
+        },
         "notes": [
             "Tracks come from NOAA IBTrACS western North Pacific CSV.",
             "Intensity uses JMA/Tokyo 10-minute sustained wind when available, with WMO wind as fallback.",
             "Daily NOAA OISST v2.1 AVHRR fields are sampled at the nearest grid cell to each storm-center position.",
+            "ERA5 humidity and vertical wind shear are optional cache-based enrichments; the real-data path still runs when no ERA5 cache is present.",
         ],
     }
     return storms, metadata
@@ -161,6 +169,177 @@ def _attach_oisst(frame: pd.DataFrame, config: ExperimentConfig) -> pd.DataFrame
     return result
 
 
+def _attach_era5_if_available(
+    frame: pd.DataFrame, config: ExperimentConfig
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    result = frame.copy()
+    result["relative_humidity"] = np.nan
+    result["vertical_shear"] = np.nan
+
+    cache_dir = config.era5_cache_dir
+    if cache_dir is None:
+        return result, {"enabled": False, "reason": "No ERA5 cache directory configured."}
+
+    era5_files = sorted(Path(cache_dir).glob("*.nc"))
+    if not era5_files:
+        return result, {
+            "enabled": False,
+            "cache_dir": str(Path(cache_dir).resolve()),
+            "reason": "No ERA5 NetCDF files found.",
+        }
+
+    try:
+        enriched = result
+        for era5_file in era5_files:
+            with xr.open_dataset(era5_file) as dataset:
+                enriched = _sample_era5_dataset(enriched, dataset)
+    except Exception as exc:
+        return result, {
+            "enabled": False,
+            "cache_dir": str(Path(cache_dir).resolve()),
+            "files": [path.name for path in era5_files],
+            "reason": f"ERA5 cache could not be sampled: {exc}",
+        }
+
+    return enriched, {
+        "enabled": True,
+        "cache_dir": str(Path(cache_dir).resolve()),
+        "files": [path.name for path in era5_files],
+        "relative_humidity": "Nearest 700 hPa or 850 hPa relative humidity from ERA5 cache.",
+        "vertical_shear": "sqrt((u200 - u850)^2 + (v200 - v850)^2) from ERA5 cache.",
+        "rows_with_relative_humidity": int(enriched["relative_humidity"].notna().sum()),
+        "rows_with_vertical_shear": int(enriched["vertical_shear"].notna().sum()),
+    }
+
+
+def _sample_era5_dataset(frame: pd.DataFrame, dataset: xr.Dataset) -> pd.DataFrame:
+    result = frame.copy()
+    coord_names = _era5_coord_names(dataset)
+    rh_var = _first_present(dataset, ("r", "relative_humidity"))
+    u_var = _first_present(dataset, ("u", "u_component_of_wind"))
+    v_var = _first_present(dataset, ("v", "v_component_of_wind"))
+
+    if rh_var is None and (u_var is None or v_var is None):
+        raise ValueError("Expected ERA5 variables r/relative_humidity and u/v wind fields.")
+
+    time_values = pd.to_datetime(dataset[coord_names["time"]].values, utc=True)
+    min_time = time_values.min() - pd.Timedelta(hours=12)
+    max_time = time_values.max() + pd.Timedelta(hours=12)
+    candidate_rows = result.loc[
+        (result["ISO_TIME"] >= min_time) & (result["ISO_TIME"] <= max_time)
+    ]
+
+    for row_index, row in candidate_rows.iterrows():
+        time_value = pd.Timestamp(row["ISO_TIME"]).to_datetime64()
+        lat_value = float(row["LAT"])
+        lon_value = _normalize_lon_for_dataset(float(row["LON"]), dataset, coord_names["lon"])
+
+        if rh_var is not None:
+            rh_level = _select_level(dataset, coord_names["level"], (700, 850))
+            if rh_level is not None:
+                rh_value = _sample_era5_value(
+                    dataset[rh_var],
+                    coord_names,
+                    time_value,
+                    lat_value,
+                    lon_value,
+                    rh_level,
+                )
+                if np.isfinite(rh_value):
+                    result.at[row_index, "relative_humidity"] = (
+                        rh_value / 100.0 if rh_value > 1.5 else rh_value
+                    )
+
+        if u_var is not None and v_var is not None:
+            level_200 = _select_level(dataset, coord_names["level"], (200,))
+            level_850 = _select_level(dataset, coord_names["level"], (850,))
+            if level_200 is not None and level_850 is not None:
+                u200 = _sample_era5_value(
+                    dataset[u_var], coord_names, time_value, lat_value, lon_value, level_200
+                )
+                v200 = _sample_era5_value(
+                    dataset[v_var], coord_names, time_value, lat_value, lon_value, level_200
+                )
+                u850 = _sample_era5_value(
+                    dataset[u_var], coord_names, time_value, lat_value, lon_value, level_850
+                )
+                v850 = _sample_era5_value(
+                    dataset[v_var], coord_names, time_value, lat_value, lon_value, level_850
+                )
+                values = np.asarray([u200, v200, u850, v850], dtype=np.float32)
+                if np.isfinite(values).all():
+                    result.at[row_index, "vertical_shear"] = float(
+                        np.sqrt((u200 - u850) ** 2 + (v200 - v850) ** 2)
+                    )
+
+    return result
+
+
+def _era5_coord_names(dataset: xr.Dataset) -> dict[str, str]:
+    names = set(dataset.coords) | set(dataset.dims)
+    candidates = {
+        "time": ("valid_time", "time"),
+        "lat": ("latitude", "lat"),
+        "lon": ("longitude", "lon"),
+        "level": ("pressure_level", "level", "isobaricInhPa"),
+    }
+    found: dict[str, str] = {}
+    for key, options in candidates.items():
+        for option in options:
+            if option in names:
+                found[key] = option
+                break
+        if key not in found:
+            raise ValueError(f"ERA5 coordinate not found: {key}")
+    return found
+
+
+def _first_present(dataset: xr.Dataset, names: tuple[str, ...]) -> str | None:
+    for name in names:
+        if name in dataset:
+            return name
+    return None
+
+
+def _select_level(
+    dataset: xr.Dataset, level_coord: str, preferred_levels: tuple[int, ...]
+) -> float | None:
+    levels = np.asarray(dataset[level_coord].values, dtype=float)
+    for preferred in preferred_levels:
+        if levels.size == 0:
+            return None
+        nearest = float(levels[np.argmin(np.abs(levels - preferred))])
+        if abs(nearest - preferred) <= 75:
+            return nearest
+    return None
+
+
+def _normalize_lon_for_dataset(lon: float, dataset: xr.Dataset, lon_coord: str) -> float:
+    lon_values = np.asarray(dataset[lon_coord].values, dtype=float)
+    if lon_values.size and lon_values.max() > 180.0:
+        return lon % 360.0
+    if lon > 180.0:
+        return lon - 360.0
+    return lon
+
+
+def _sample_era5_value(
+    field: xr.DataArray,
+    coord_names: dict[str, str],
+    time_value: np.datetime64,
+    lat_value: float,
+    lon_value: float,
+    level_value: float,
+) -> float:
+    selectors = {
+        coord_names["time"]: time_value,
+        coord_names["lat"]: lat_value,
+        coord_names["lon"]: lon_value,
+        coord_names["level"]: level_value,
+    }
+    return float(field.sel(selectors, method="nearest").values)
+
+
 def _ensure_oisst_file(date_value: pd.Timestamp, cache_dir: Path) -> Path:
     yyyymm = date_value.strftime("%Y%m")
     yyyymmdd = date_value.strftime("%Y%m%d")
@@ -204,8 +383,8 @@ def _frame_to_storm_tracks(frame: pd.DataFrame, config: ExperimentConfig) -> lis
                 latitude=storm_rows["LAT"].to_numpy(dtype=np.float32),
                 sst=storm_rows["sst_c"].to_numpy(dtype=np.float32),
                 intensity=storm_rows["wind_ms"].to_numpy(dtype=np.float32),
-                shear=np.full(len(storm_rows), np.nan, dtype=np.float32),
-                humidity=np.full(len(storm_rows), np.nan, dtype=np.float32),
+                shear=storm_rows["vertical_shear"].to_numpy(dtype=np.float32),
+                humidity=storm_rows["relative_humidity"].to_numpy(dtype=np.float32),
             )
         )
 

@@ -78,12 +78,14 @@ def build_synthetic_source_metadata(config: ExperimentConfig) -> dict[str, objec
         "n_storms": config.n_storms,
         "parameter_guide": SYNTHETIC_PARAMETER_GUIDE,
         "physics_baseline": {
+            "description": "Interpretable simplified baseline model with rule-based coefficients, not a calibrated operational forecast model.",
             "intensity_min_ms": INTENSITY_MIN,
             "intensity_max_ms": INTENSITY_MAX,
             "thermal_reference_c": 27.0,
             "cold_penalty_threshold_c": 26.4,
             "poleward_drag_threshold_deg": 18.0,
             "saturation_threshold_ms": 60.0,
+            "coefficient_note": "Coefficients are fixed simplified rule-based values that encode warm-water support, cold-water penalty, poleward weakening, and intensity saturation.",
         },
     }
 

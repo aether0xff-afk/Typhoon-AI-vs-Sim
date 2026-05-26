@@ -22,6 +22,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=64, help="Training batch size.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument(
+        "--repeat-seeds",
+        default="",
+        help="Comma-separated seeds for repeated experiments, for example 42,7,13,21,100.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("outputs"),
@@ -32,6 +37,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("data"),
         help="Directory used to cache downloaded real-data files.",
+    )
+    parser.add_argument(
+        "--era5-cache-dir",
+        type=Path,
+        default=None,
+        help="Optional directory containing ERA5 NetCDF cache files for humidity and wind shear.",
     )
     parser.add_argument(
         "--ibtracs-start-year",
@@ -80,12 +91,18 @@ def main() -> int:
         output_dir=args.output_dir,
         checkpoint_dir=args.output_dir / "checkpoints",
         data_dir=args.data_dir,
+        era5_cache_dir=args.era5_cache_dir,
         ibtracs_start_year=args.ibtracs_start_year,
         ibtracs_end_year=args.ibtracs_end_year,
         max_real_storms=quick_real_limit,
         min_real_track_steps=args.min_real_track_steps,
     )
     from typhoon_ai_vs_sim.experiment import run_experiment
+    from typhoon_ai_vs_sim.experiment import run_repeated_experiments
 
-    run_experiment(config)
+    if args.repeat_seeds.strip():
+        seeds = [int(seed.strip()) for seed in args.repeat_seeds.split(",") if seed.strip()]
+        run_repeated_experiments(config, seeds)
+    else:
+        run_experiment(config)
     return 0

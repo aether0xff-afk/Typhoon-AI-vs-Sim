@@ -1,15 +1,15 @@
 # Typhoon AI vs Sim
 
-단순 물리 모델이 예측한 태풍 강도를 인공지능이 잔차(residual) 방식으로 보정하는 실험 프로젝트다.  
+단순 물리 모델, 직접 회귀 AI, 물리 모델 잔차를 보정하는 하이브리드 AI를 비교하는 실험 프로젝트다.  
 이제 같은 구조를 `합성 데이터`와 `실제 데이터(IBTrACS + NOAA OISST)` 두 경로에서 모두 실행할 수 있다.
 
 핵심 구조는 다음과 같다.
 
 1. 데이터 소스를 고른다.
 2. 단순 물리 모델이 다음 시점 강도를 먼저 예측한다.
-3. `MLP`, `LSTM`, `Transformer`가 물리 모델의 오차를 학습한다.
-4. `물리 예측값 + AI 보정값`으로 최종 강도를 계산한다.
-5. `MAE`, `RMSE`로 물리 단독 모델과 AI 보정 모델을 비교한다.
+3. `Hybrid-MLP`, `Hybrid-LSTM`, `Hybrid-Transformer`는 물리 모델의 오차를 학습한다.
+4. `Direct-MLP`, `Direct-LSTM`, `Direct-Transformer`는 다음 시점 강도 자체를 학습한다.
+5. `MAE`, `RMSE`로 물리 단독 모델, 직접 회귀 모델, 하이브리드 보정 모델을 비교한다.
 
 데이터 소스는 다음 둘 중 하나다.
 
@@ -46,6 +46,18 @@ python main.py --output-dir outputs/run
 python main.py --ibtracs-start-year 2018 --ibtracs-end-year 2020 --max-real-storms 24 --epochs 40 --output-dir outputs/custom
 ```
 
+반복 seed 검증:
+
+```bash
+python main.py --data-source synthetic --quick --repeat-seeds 42,7,13,21,100 --output-dir outputs/repeated
+```
+
+ERA5 캐시가 있는 경우 선택적 보강:
+
+```bash
+python main.py --era5-cache-dir data/era5_cache --output-dir outputs/real_with_era5
+```
+
 합성 데이터 스모크 실행:
 
 ```bash
@@ -72,11 +84,17 @@ python main.py --data-source synthetic --storms 150 --epochs 50 --window-size 6 
 - `data_source_summary.json`: 데이터 소스, 필터링 조건, 합성 파라미터 근거 또는 실데이터 출처 요약
 - `predictions.csv`: 물리 모델과 AI 보정 모델의 예측값
 - `metrics.csv`: `MAE`, `RMSE`, 개선율 비교
+- `metrics_by_seed.csv`: 반복 seed 실행 시 seed별 성능
+- `metrics_summary.csv`: 반복 seed 실행 시 평균과 표준편차
 - `training_history.csv`: 학습 손실 기록
 - `summary.json`: 핵심 설정과 테스트 메트릭 요약
 - `metrics_comparison.png`: 모델별 오차 비교 그래프
 - `sample_trajectories.png`: 실제 강도와 예측 강도 비교 그래프
 - `training_curves.png`: 학습 곡선
+- `physics_vs_actual.png`: 실제 강도와 물리 모델 예측 산점도
+- `residual_distribution.png`: 물리 모델 잔차 분포
+- `sst_vs_residual.png`: SST와 물리 모델 잔차의 관계
+- `latitude_vs_residual.png`: 위도와 물리 모델 잔차의 관계
 - `checkpoints/*.pt`: 각 AI 모델의 최적 가중치
 
 ## 프로젝트 구조
@@ -98,12 +116,15 @@ typhoon_ai_vs_sim/
 
 ## 구현 포인트
 
-- 물리 모델은 `SST`, 위도, 강도 포화 효과만 반영하는 단순한 규칙 기반 모델이다.
+- 물리 모델은 `SST`, 위도, 강도 포화 효과만 반영하는 물리적으로 해석 가능한 단순 기준선 모델이다.
+- 물리 모델 계수는 정량적 운영 예보 모델을 보정한 값이 아니라, 해수면 온도와 위도 효과를 반영하기 위한 단순화된 규칙 기반 값이다.
 - 합성 데이터는 서태평양 태풍의 6시간 간격 진행을 흉내 내도록 설계했고, 파라미터 범위와 근거를 `data_source_summary.json`에 함께 저장한다.
 - 실제 데이터는 NOAA IBTrACS 서태평양 트랙에서 강도를 읽고, NOAA OISST 일별 격자에서 태풍 중심 위치의 SST를 최근접 추출한다.
+- ERA5 NetCDF 캐시가 지정되면 700 hPa 또는 850 hPa 상대습도와 200-850 hPa 연직 바람 전단을 최근접 추출한다. 캐시가 없으면 기존 IBTrACS + OISST 경로가 그대로 동작한다.
 - 합성 기준 데이터는 급강화 구간, 습도, 전단, 기억 효과 같은 비선형 요소를 추가로 포함한다.
-- AI는 강도 자체를 직접 예측하지 않고 물리 모델의 오차만 학습한다.
-- 따라서 결과 해석을 `AI가 물리 모델을 보정했다`는 방향으로 깔끔하게 가져갈 수 있다.
+- Direct 모델과 Hybrid 모델은 같은 storm 단위 train/val/test split, 같은 입력 feature, 같은 아키텍처 조건에서 비교된다.
+- target scaling은 Direct target과 Hybrid residual target을 각각 train set 기준으로만 fit하고, val/test에는 transform만 적용한다.
+- metrics는 scaled 값이 아니라 원래 intensity 단위로 inverse transform한 최종 예측값에서 계산한다.
 
 ## 검증 예시
 

@@ -28,6 +28,7 @@ class ExperimentConfig:
     output_dir: Path = field(default_factory=lambda: Path("outputs"))
     checkpoint_dir: Path = field(default_factory=lambda: Path("checkpoints"))
     data_dir: Path = field(default_factory=lambda: Path("data"))
+    era5_cache_dir: Path | None = None
     ibtracs_basin: str = "WP"
     ibtracs_start_year: int = 2018
     ibtracs_end_year: int = 2020
